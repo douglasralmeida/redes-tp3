@@ -15,6 +15,15 @@ EXIBIR_LOG         = True
 # =====================
 parametros = {'ip': '127.0.0.1', 'porta': 0, 'timeout': 6, 'servidores': {}, 'bd': ''}
 bd = {}
+soquetes = None
+
+# CLASSES DO PROGRAMA
+# ===================
+# Gerencia vários soquetes
+class Soquetes():
+	fila_mensagens = {}
+	entradas = []
+	saidas = []
 
 # FUNCOES DO PROGRAMA
 # ===================
@@ -54,6 +63,13 @@ def bd_processar():
 		i = l.find(' ')
 		chave = l[0:i]
 		bd[chave] = l[i:].lstrip().strip('\n')
+
+def rede_iniciar():
+	soquete = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+	endereco = (parametros['ip'], parametros['porta'])
+	soquete.setblocking(0)
+	soquete.bind(endereco)
+	soquete.listen()
 
 # CORPO DO PROGRAMA
 # =================
