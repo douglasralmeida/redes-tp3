@@ -4,6 +4,8 @@
 # TP3 de Redes - Nó da Rede
 # Douglas R. Almeida
 
+import Queue
+import select
 import socket
 import sys
 
@@ -21,9 +23,52 @@ soquetes = None
 # ===================
 # Gerencia vários soquetes
 class Soquetes():
-	fila_mensagens = {}
-	entradas = []
-	saidas = []
+	def __init__(self):
+		self.servidor = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+		endereco = (parametros['ip'], parametros['porta'])
+		servidor.setblocking(0)
+		servidor.bind(endereco)
+		servidor.listen()
+		self.entradas = [servidor]
+
+	def novocliente(self, conexao):
+		conexao.setblocking(0)
+		self.entradas.append(conexao)
+		self.fila_mensagens[conexao] = Queue.Queue()
+
+	def removercliente(self, conexao):
+		self.entradas.remove(conexao)
+		conexao.close()
+		del self.filas_mensagens[conexao]
+
+	def manipular(self):
+		while (self.entradas):
+			# Aguarda por soquetes que estão prontos para processamento
+			l, e, x = select.select(self.entradas, [], self.entradas)
+
+			# Fazer coisas aqui
+
+			if not (l or x):
+				continue
+			
+			# Soquetes prontos para leitura
+			for s in l:
+				if s is self.servidor:
+					# soquete que aguarda por novas conexões
+					con, endereco = s.accept()
+					self.novocliente(con)
+				else:
+					# soquete que aguarda por dados de consulta
+					dados = s.recv(2)
+					if dados:
+						#processar os dados aqui...
+						print(dados)
+					else:
+						self.removercliente(s)
+					
+			# Soquetes com erros
+			for s in x:
+				self.removercliente(s)
 
 # FUNCOES DO PROGRAMA
 # ===================
@@ -64,16 +109,10 @@ def bd_processar():
 		chave = l[0:i]
 		bd[chave] = l[i:].lstrip().strip('\n')
 
-def rede_iniciar():
-	soquete = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-	endereco = (parametros['ip'], parametros['porta'])
-	soquete.setblocking(0)
-	soquete.bind(endereco)
-	soquete.listen()
-
 # CORPO DO PROGRAMA
 # =================
 if len(sys.argv) > 2:
 	args_processar()
 	bd_processar()
-	print(bd)
+	soquetes = Soquetes()
+	soquetes.manipular()
