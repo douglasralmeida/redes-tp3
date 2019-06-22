@@ -4,39 +4,186 @@
 # TP3 de Redes - Nó da Rede
 # Douglas R. Almeida
 
-import Queue
+import queue
 import select
 import socket
+from struct import pack, unpack
 import sys
 
 # CONSTANTES DO PROGRAMA
 # ======================
-EXIBIR_LOG         = True
+MSG_ID 				= 4
+EXIBIR_LOG          = True
 
 # VARIÁVEIS DO PROGRAMA
 # =====================
-parametros = {'ip': '127.0.0.1', 'porta': 0, 'timeout': 6, 'servidores': {}, 'bd': ''}
+parametros = {'ip': '', 'porta': 0, 'timeout': 6, 'servidores': {}, 'bd': ''}
 bd = {}
 soquetes = None
 
 # CLASSES DO PROGRAMA
 # ===================
+# Conversor bytes/int
+class Bytes():
+	def __init__(self):
+		self.pos = 0
+		self.valor = bytearray()
+
+	def apensarInt(self, numero):
+		bytesvalor = bytearray(pack('!I', int(numero)))
+		self.valor += bytesvalor
+
+	def apensarShort(self, numero):
+		bytesvalor = bytearray(pack('!H', int(numero)))
+		self.valor += bytesvalor
+
+	def apensarZero(self, quantidade):
+		for i in range(quantidade):
+			self.valor.append(0)
+
+	def extrairInt(self):
+		pos1 = self.pos
+		pos2 = self.pos + 4
+		self.pos = pos2
+		return Bytes.paraInt(self.valor[pos1:pos2])
+
+	def extrairShort(numero):
+		pos1 = self.pos
+		pos2 = self.pos + 2
+		self.pos = pos2
+		return Bytes.paraShort(self.valor[pos1:pos2])
+
+	@staticmethod
+	def paraInt(bytesarray):
+		return unpack('!I', bytesarray)[0]
+
+	@staticmethod
+	def paraShort(bytesarray):
+		return unpack('!H', bytesarray)[0]
+
+	def obterBytes(self):
+		return self.valor
+
+	def definirBytes(self, novovalor):
+		self.valor = novovalor
+
+
+# Gerador de mensagens
+class Mensagens():
+	@staticmethod
+	def gerarId():
+		bytesParaEnviar = Bytes()
+		bytesParaEnviar.apensarShort(MSG_ID)
+		bytesParaEnviar.apensarZero(2)
+
+		return bytesParaEnviar.obterBytes()
+
+# Gerencia a lista de serventes
+class Serventes():
+	def __init__(self):
+		self.lista = {}
+
+	def adicionar(self, ip, porta):
+		self.lista[ip] = porta
+
 # Gerencia vários soquetes
 class Soquetes():
 	def __init__(self):
-		self.servidor = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
 		endereco = (parametros['ip'], parametros['porta'])
-		servidor.setblocking(0)
-		servidor.bind(endereco)
-		servidor.listen()
-		self.entradas = [servidor]
+		self.filas_mensagens = {}
+		self.receberDadosComo = [
+  			self.receberNada,
+			self.receberNada,
+			self.receberNada,
+			self.receberNada,
+			self.receberId,
+			self.receberKeyReq,
+			self.receberTopoReq,
+			self.receberKeyFlood,
+			self.receberTopoFlood,
+			self.receberResp
+		]
+		self.servidor = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+		self.servidor.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+		self.servidor.setblocking(0)
+		self.servidor.bind(endereco)
+		self.servidor.listen()
+		self.entradas = [self.servidor]
 
-	def novocliente(self, conexao):
+	def adicionarCliente(self, conexao):
 		conexao.setblocking(0)
 		self.entradas.append(conexao)
-		self.fila_mensagens[conexao] = Queue.Queue()
+		self.filas_mensagens[conexao] = queue.Queue()
 
-	def removercliente(self, conexao):
+	def conectarAtivamente(self, servidores):
+		for (ip, porta) in servidores.items():
+			dest = (ip, porta)
+			con = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+			con.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+			con.connect(dest)
+			self.adicionarCliente(con)
+			con.sendall(Mensagens.gerarId())
+
+	def receberDados(self, conexao):
+		bytetipo = conexao.recv(2)
+		if not bytetipo:
+			return False
+		tipo = Bytes.paraShort(bytetipo)
+		self.receberDadosComo[tipo](conexao)
+
+		return True
+
+	def receberId(self, conexao):
+		byteporta = conexao.recv(2)
+		porta = Bytes.paraShort(byteporta)
+		if porta > 0:
+			log("Pedido de conexão de um cliente.")
+		else:
+			log("Pedido de conexão de um servente.")
+
+	def receberKeyReq(self, conexao):
+		bytedados = conexao.recv(6)
+		seq = Bytes.paraInt(bytedados[:3])
+		tam = Bytes.paraShort(bytedados[4:5])
+		texto = conexao.recv(tam)
+		# falta decodificar
+		log("Pedido de consulta com a chave X e num seq {0}.".format(seq))
+
+	def receberTopoReq(self, conexao):
+		bytedados = conexao.recv(4)
+		seq = Bytes.paraInt(bytedados)
+		log("Pedido de topologia com num seq {0}.".format(seq))
+	
+	def receberKeyFlood(self, conexao):
+		bytedados = conexao.recv(14)
+		ttl = Bytes.paraShort(bytedados[:1])
+		seq = Bytes.paraInt(bytedados[2:5])
+		tam = Bytes.paraShort(bytesdados[12:13])
+		texto = conexao.recv(tam)
+		# falta decodificar
+		log("Pedido de alagamento para consulta com a chave X com num seq {0}.".format(seq))
+	
+	def receberTopoFlood(self, conexao):
+		bytedados = conexao.recv(14)
+		ttl = Bytes.paraShort(bytedados[:1])
+		seq = Bytes.paraInt(bytedados[2:5])
+		tam = Bytes.paraShort(bytesdados[12:13])
+		texto = conexao.recv(tam)
+		# falta decodificar
+		log("Pedido de alagamento para topoologia com num seq {0}.".format(seq))
+	
+	def receberResp(self, conexao):
+		bytedados = conexao.recv(6)
+		seq = Bytes.paraInt(bytedados[:3])
+		tam = Bytes.paraShort(bytesdados[4:5])
+		texto = conexao.recv(tam)
+		# falta decodificar
+		log("Resposta com num seq {0}.".format(seq))
+
+	def receberNada(self, conexao):
+		log("Ops!")
+
+	def removerCliente(self, conexao):
 		self.entradas.remove(conexao)
 		conexao.close()
 		del self.filas_mensagens[conexao]
@@ -56,19 +203,18 @@ class Soquetes():
 				if s is self.servidor:
 					# soquete que aguarda por novas conexões
 					con, endereco = s.accept()
-					self.novocliente(con)
+					self.adicionarCliente(con)
 				else:
-					# soquete que aguarda por dados de consulta
-					dados = s.recv(2)
-					if dados:
+					# soquete que aguarda por dados de entrada
+					if self.receberDados(s):
 						#processar os dados aqui...
-						print(dados)
+						print("OK")
 					else:
-						self.removercliente(s)
+						self.removerCliente(s)
 					
 			# Soquetes com erros
 			for s in x:
-				self.removercliente(s)
+				self.removerCliente(s)
 
 # FUNCOES DO PROGRAMA
 # ===================
@@ -92,8 +238,7 @@ def args_processar():
         j = 3
         while (j < i):
             temp = sys.argv[j].split(':')
-            parametros['servidores']['ip'] = temp[0]
-            parametros['servidores']['porta'] = temp[1]
+            parametros['servidores'][temp[0]] = int(temp[1])
             j = j + 1
 
 def bd_carregar():
@@ -114,5 +259,8 @@ def bd_processar():
 if len(sys.argv) > 2:
 	args_processar()
 	bd_processar()
+	serventes = Serventes()
 	soquetes = Soquetes()
+	if len(parametros['servidores']) > 0:
+		soquetes.conectarAtivamente(parametros['servidores'])
 	soquetes.manipular()
