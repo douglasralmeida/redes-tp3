@@ -13,29 +13,39 @@ import sys
 # CONSTANTES DO PROGRAMA
 # ======================
 MSG_ID 				= 4
+MSG_KEYREQ			= 5
+MSG_TOPOREQ			= 6
+MSG_KEYFLOOD		= 7
+MSG_TOPOFLOOD		= 8
+MSG_RESP			= 9
 EXIBIR_LOG          = True
 
 # VARIÁVEIS DO PROGRAMA
 # =====================
 parametros = {'ip': '', 'porta': 0, 'timeout': 6, 'servidores': {}, 'bd': ''}
 bd = {}
+mensagens = None
 soquetes = None
 
 # CLASSES DO PROGRAMA
 # ===================
-# Conversor bytes/int
-class Bytes():
+# Dados no formato de transmissão
+class Dados():
 	def __init__(self):
 		self.pos = 0
 		self.valor = bytearray()
+		self.texto = "".encode("ascii", "ignore")
 
 	def apensarInt(self, numero):
-		bytesvalor = bytearray(pack('!I', int(numero)))
+		bytesvalor = bytearray(pack("!I", int(numero)))
 		self.valor += bytesvalor
 
 	def apensarShort(self, numero):
-		bytesvalor = bytearray(pack('!H', int(numero)))
+		bytesvalor = bytearray(pack("!H", int(numero)))
 		self.valor += bytesvalor
+
+	def apensarTexto(self, texto):
+		self.texto = texto.encode("ascii", "ignore")
 
 	def apensarZero(self, quantidade):
 		for i in range(quantidade):
@@ -53,6 +63,9 @@ class Bytes():
 		self.pos = pos2
 		return Bytes.paraShort(self.valor[pos1:pos2])
 
+	def extrairText(self):
+		return self.texto.decode("ascii")
+
 	@staticmethod
 	def paraInt(bytesarray):
 		return unpack('!I', bytesarray)[0]
@@ -61,22 +74,95 @@ class Bytes():
 	def paraShort(bytesarray):
 		return unpack('!H', bytesarray)[0]
 
-	def obterBytes(self):
-		return self.valor
-
-	def definirBytes(self, novovalor):
+	def definir(self, novovalor, novotexto):
 		self.valor = novovalor
+		self.texto = novotexto
 
+	def obter(self):
+		return self.valor, self.texto
 
 # Gerador de mensagens
 class Mensagens():
-	@staticmethod
-	def gerarId():
-		bytesParaEnviar = Bytes()
-		bytesParaEnviar.apensarShort(MSG_ID)
-		bytesParaEnviar.apensarZero(2)
+	def __init__(self, modoservent):
+		self.numseq = 0
+		self.modoservent = modoservent
+		self.ttlpadrao = 3
 
-		return bytesParaEnviar.obterBytes()
+	def gerar(self, id):
+		dados = Dados()
+		dados.apensarShort(id)
+
+		return dados
+
+	def gerarId(self):		
+		dados = self.gerar(MSG_ID)
+		if self.modoservent:
+			log("Enviando pedido de conexão.")
+			dados.apensarZero(2)
+		else:
+			dados.apensarShort(parametros['porta'])
+
+		return dados.obter()
+
+	def gerarKeyReq(self, texto):
+		dados = self.gerar(MSG_KEYREQ)
+		# sequencial
+		dados.apensarInt(self.numseq)
+		self.numseq += 1
+		#texto
+		dados.apensarShort(len(texto))
+		dados.apensarTexto(texto)
+
+		return dados.obter()
+
+	def gerarTopoReq(self):
+		dados = self.gerar(MSG_TOPOREQ)
+		# sequencial
+		dados.apensarInt(self.numseq)
+		self.numseq += 1
+
+		return dados.obter()
+
+	def gerarKeyFlood(self, cliente):
+		dados = self.gerar(MSG_KEYFLOOD)
+		# ttl
+		dados.apensarShort(self.ttlpadrao)
+		# sequencial
+		dados.apensarInt(cliente.numseq)
+		# ip e porta
+		dados.apensarInt(cliente.ip)
+		dados.apensarShort(cliente.porta)
+		#texto
+		dados.apensarShort(len(cliente.texto))
+		dados.apensarTexto(cliente.texto)
+
+		return dados.obter()
+
+	def gerarTopoFlood(self, cliente):
+		dados = self.gerar(MSG_TOPOFLOOD)
+		# ttl
+		dados.apensarShort(self.ttlpadrao)
+		# sequencial
+		dados.apensarInt(cliente.numseq)
+		# ip e porta
+		dados.apensarInt(cliente.ip)
+		dados.apensarShort(cliente.porta)
+		#texto
+		dados.apensarShort(len(cliente.texto))
+		dados.apensarTexto(cliente.texto)
+
+		return dados.obter()
+
+	def gerarResp(self, numseq, texto):
+		dados = self.gerar(MSG_RESP)
+		log("Enviando resposta '{0}'.".format(texto))
+		# sequencial
+		dados.apensarInt(numseq)
+		#texto
+		dados.apensarShort(len(texto))
+		dados.apensarTexto(texto)
+
+		return dados.obter()
 
 # Gerencia a lista de serventes
 class Serventes():
@@ -109,6 +195,7 @@ class Soquetes():
 		self.servidor.bind(endereco)
 		self.servidor.listen()
 		self.entradas = [self.servidor]
+		log("Servente {0} na porta {1}.".format(parametros['ip'], parametros['porta']))
 
 	def adicionarCliente(self, conexao):
 		conexao.setblocking(0)
@@ -122,65 +209,88 @@ class Soquetes():
 			con.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
 			con.connect(dest)
 			self.adicionarCliente(con)
-			con.sendall(Mensagens.gerarId())
+			serventes.adicionar(ip, porta)
+			# Envia msg de ID
+			dados, texto = mensagens.gerarId()
+			self.enviarDados(con, dados, texto)
+
+	def enviarDados(self, conexao, dados, texto):
+		endereco = conexao.getpeername()
+		conexao.sendall(dados)
+		if len(texto) > 0:
+			conexao.sendall(texto)
+		log("Dados para {0}.".format(endereco))
 
 	def receberDados(self, conexao):
-		bytetipo = conexao.recv(2)
-		if not bytetipo:
+		dadotipo = conexao.recv(2)
+		endereco = conexao.getpeername()
+		if not dadotipo:
 			return False
-		tipo = Bytes.paraShort(bytetipo)
-		self.receberDadosComo[tipo](conexao)
+		tipo = Dados.paraShort(dadotipo)
+		log("Dados de {0}.".format(endereco))
+		self.receberDadosComo[tipo](conexao, endereco)
 
 		return True
 
-	def receberId(self, conexao):
-		byteporta = conexao.recv(2)
-		porta = Bytes.paraShort(byteporta)
+	def receberId(self, conexao, endereco):
+		dadoporta = conexao.recv(2)
+		porta = Dados.paraShort(dadoporta)
 		if porta > 0:
-			log("Pedido de conexão de um cliente.")
+			log("Pedido de conexão de um cliente {0} na porta {1}.".format(endereco[0], porta))
 		else:
-			log("Pedido de conexão de um servente.")
+			log("Pedido de conexão de um servente {0} na porta {1}.".format(endereco[0], endereco[1]))
+			serventes.adicionar(endereco[0], endereco[1])
 
-	def receberKeyReq(self, conexao):
-		bytedados = conexao.recv(6)
-		seq = Bytes.paraInt(bytedados[:3])
-		tam = Bytes.paraShort(bytedados[4:5])
+			# -- TESTE -- #
+			if EXIBIR_LOG:
+				dados, texto = mensagens.gerarResp(0, "qualquer resposta")
+				self.enviarDados(conexao, dados, texto)
+			
+
+	def receberKeyReq(self, conexao, endereco):
+		dados = conexao.recv(6)
+		seq = Dados.paraInt(dados[:4])
+		tam = Dados.paraShort(dados[4:6])
 		texto = conexao.recv(tam)
 		# falta decodificar
 		log("Pedido de consulta com a chave X e num seq {0}.".format(seq))
 
-	def receberTopoReq(self, conexao):
-		bytedados = conexao.recv(4)
-		seq = Bytes.paraInt(bytedados)
+	def receberTopoReq(self, conexao, endereco):
+		dados = conexao.recv(4)
+		seq = Dados.paraInt(dados)
 		log("Pedido de topologia com num seq {0}.".format(seq))
 	
-	def receberKeyFlood(self, conexao):
-		bytedados = conexao.recv(14)
-		ttl = Bytes.paraShort(bytedados[:1])
-		seq = Bytes.paraInt(bytedados[2:5])
-		tam = Bytes.paraShort(bytesdados[12:13])
+	def receberKeyFlood(self, conexao, endereco):
+		dados = conexao.recv(14)
+		ttl = Dados.paraShort(dados[:2])
+		seq = Dados.paraInt(dados[2:6])
+		iporigem = Dados.paraInt(dados[6:10])
+		portaorigem = Dados.paraShort(dados[10:12])
+		tam = Dados.paraShort(dados[12:14])
 		texto = conexao.recv(tam)
 		# falta decodificar
 		log("Pedido de alagamento para consulta com a chave X com num seq {0}.".format(seq))
 	
-	def receberTopoFlood(self, conexao):
-		bytedados = conexao.recv(14)
-		ttl = Bytes.paraShort(bytedados[:1])
-		seq = Bytes.paraInt(bytedados[2:5])
-		tam = Bytes.paraShort(bytesdados[12:13])
+	def receberTopoFlood(self, conexao, endereco):
+		dados = conexao.recv(14)
+		ttl = Dados.paraShort(dados[:2])
+		seq = Dados.paraInt(ados[2:6])
+		iporigem = Dados.paraInt(dados[6:10])
+		portaorigem = Dados.paraShort(dados[10:12])
+		tam = Dados.paraShort(dados[12:14])
 		texto = conexao.recv(tam)
 		# falta decodificar
 		log("Pedido de alagamento para topoologia com num seq {0}.".format(seq))
 	
-	def receberResp(self, conexao):
-		bytedados = conexao.recv(6)
-		seq = Bytes.paraInt(bytedados[:3])
-		tam = Bytes.paraShort(bytesdados[4:5])
+	def receberResp(self, conexao, endereco):
+		dados = conexao.recv(6)
+		seq = Dados.paraInt(dados[:4])
+		tam = Dados.paraShort(dados[4:6])
 		texto = conexao.recv(tam)
 		# falta decodificar
-		log("Resposta com num seq {0}.".format(seq))
+		log("Resposta '{0}' com num seq {1}.".format(texto.decode("ascii"), seq))
 
-	def receberNada(self, conexao):
+	def receberNada(self, conexao, endereco):
 		log("Ops!")
 
 	def removerCliente(self, conexao):
@@ -206,12 +316,9 @@ class Soquetes():
 					self.adicionarCliente(con)
 				else:
 					# soquete que aguarda por dados de entrada
-					if self.receberDados(s):
-						#processar os dados aqui...
-						print("OK")
-					else:
+					if not self.receberDados(s):
 						self.removerCliente(s)
-					
+
 			# Soquetes com erros
 			for s in x:
 				self.removerCliente(s)
@@ -259,6 +366,8 @@ def bd_processar():
 if len(sys.argv) > 2:
 	args_processar()
 	bd_processar()
+	# inicia o gerenciador de msgs no modo servente
+	mensagens = Mensagens(True)
 	serventes = Serventes()
 	soquetes = Soquetes()
 	if len(parametros['servidores']) > 0:
