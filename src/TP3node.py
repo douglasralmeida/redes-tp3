@@ -28,6 +28,7 @@ EXIBIR_LOG          = True
 # =====================
 bd = None
 Cliente = namedtuple("Cliente", ["numseq", "ip", "porta", "texto"])
+clientes = None
 historico = None
 mensagens = None
 parametros = {'ip': '', 'porta': 0, 'timeout': 6, 'servidores': {}, 'bd': ''}
@@ -58,6 +59,17 @@ class BancoDados():
 	def pesquisar(self, chave):
 		return self.dados[chave]
 
+# Gerencia a lista de clientes conectados
+class Clientes():
+	def __init__(self):
+		self.portas = dict()
+
+	def adicionar(self, ip, portaescuta):
+		self.portas[ip] = portaescuta
+
+	def obterPorta(self, ip):
+		return self.portas[ip]
+
 # Dados no formato de transmissão
 class Dados():
 	def __init__(self):
@@ -67,6 +79,11 @@ class Dados():
 
 	def apensarInt(self, numero):
 		bytesvalor = bytearray(pack("!I", int(numero)))
+		self.valor += bytesvalor
+	
+	def apensarIp(self, ip):
+		ipint = unpack("!I", socket.inet_aton(ip))[0]
+		bytesvalor = bytearray(pack("!I", int(ipint)))
 		self.valor += bytesvalor
 
 	def apensarShort(self, numero):
@@ -86,6 +103,12 @@ class Dados():
 		self.pos = pos2
 		return Bytes.paraInt(self.valor[pos1:pos2])
 
+	def extrairIp(self):
+		pos1 = self.pos
+		pos2 = self.pos + 4
+		self.pos = pos2
+		return Bytes.paraIp(self.valor[pos1:pos2])
+
 	def extrairShort(numero):
 		pos1 = self.pos
 		pos2 = self.pos + 2
@@ -98,6 +121,11 @@ class Dados():
 	@staticmethod
 	def paraInt(bytesarray):
 		return unpack('!I', bytesarray)[0]
+
+	@staticmethod
+	def paraIp(bytesarray):
+		ipint = unpack('!I', bytesarray)[0]
+		return socket.inet_ntoa(pack("!I", ipint))
 
 	@staticmethod
 	def paraShort(bytesarray):
@@ -158,7 +186,7 @@ class Mensagens():
 		# sequencial
 		dados.apensarInt(cliente.numseq)
 		# ip e porta
-		dados.apensarInt(cliente.ip)
+		dados.apensarIp(cliente.ip)
 		dados.apensarShort(cliente.porta)
 		#texto
 		dados.apensarShort(len(cliente.texto))
@@ -173,7 +201,7 @@ class Mensagens():
 		# sequencial
 		dados.apensarInt(cliente.numseq)
 		# ip e porta
-		dados.apensarInt(cliente.ip)
+		dados.apensarIp(cliente.ip)
 		dados.apensarShort(cliente.porta)
 		#texto
 		dados.apensarShort(len(cliente.texto))
@@ -213,8 +241,7 @@ class Remetente():
 	@staticmethod
 	def enviarAoCliente(endereco, dados, texto):
 		despachante = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-		setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-		#self.servidor.bind(endereco)
+		despachante.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
 		despachante.connect(endereco)
 		despachante.sendall(dados)
 		despachante.sendall(texto)
@@ -252,15 +279,10 @@ class Recebedor():
 		porta = Dados.paraShort(dadoporta)
 		if porta > 0:
 			log("Pedido de conexão de um cliente {0} na porta {1}.".format(self.endereco[0], porta))
-			self.clientes[ip] = porta
+			clientes.adicionar(self.endereco[0], porta)
 		else:
 			log("Pedido de conexão de um servente {0} na porta {1}.".format(self.endereco[0], self.endereco[1]))
 			serventes.adicionar(self.conexao)
-
-			# -- TESTE -- #
-			#if EXIBIR_LOG:
-			#	dados, texto = mensagens.gerarResp(0, "qualquer resposta")
-			#	self.enviarDados(conexao, dados, texto)	
 
 	def processarKeyReq(self):
 		dados = self.conexao.recv(6)
@@ -270,16 +292,17 @@ class Recebedor():
 		ip = self.endereco[0]
 		porta = self.endereco[1]
 		historico.add((ip, porta, seq))
+		portaescuta = clientes.obterPorta(ip)
 		log("Pedido de consulta com a chave '{0}' e num seq {1}.".format(texto, seq))
 		# consulta dicionário e responde
 		if bd.contem(texto):
 			resposta = bd.pesquisar(texto) 
 			msg, msgtexto = mensagens.gerarResp(seq, resposta)
-			Remetente.enviarAoCliente((ip, porta), msg, msgtexto)
+			Remetente.enviarAoCliente((ip, portaescuta), msg, msgtexto)
 		# gera um KeyFlood para alagamento
-		cliente = Cliente(seq, ip, porta, texto)
+		cliente = Cliente(seq, ip, portaescuta, texto)
 		msg, msgtexto = mensagens.gerarKeyFlood(cliente)
-		Remetente.alagar(seq, msg, msgtexto)
+		Remetente.alagar(msg, msgtexto)
 
 	def processarTopoReq(self):
 		dados = self.conexao.recv(4)
@@ -289,19 +312,20 @@ class Recebedor():
 		historico.add((ip, porta, seq))
 		log("Pedido de topologia com num seq {0}.".format(seq))
 		# responde ao cliente
+		portaescuta = clientes.obterPorta(ip)
 		resposta = "{0}:{1}".format(parametros["ip"], parametros["porta"])
 		msg, msgtexto = mensagens.gerarResp(seq, resposta)
-		Remetente.enviarAoCliente((ip, porta), msg, msgtexto)
+		Remetente.enviarAoCliente((ip, portaescuta), msg, msgtexto)
 		# gera um TopoFlood para alagamento
-		cliente = Cliente(seq, ip, porta, resposta)
+		cliente = Cliente(seq, ip, portaescuta, resposta)
 		msg, msgtexto = mensagens.gerarTopoFlood(cliente)
-		Remetente.alagar(seq, msg, msgtexto)
+		Remetente.alagar(msg, msgtexto)
 	
 	def processarKeyFlood(self):
 		dados = self.conexao.recv(14)
 		ttl = Dados.paraShort(dados[:2])
 		seq = Dados.paraInt(dados[2:6])
-		iporigem = Dados.paraInt(dados[6:10])
+		iporigem = Dados.paraIp(dados[6:10])
 		portaorigem = Dados.paraShort(dados[10:12])
 		tam = Dados.paraShort(dados[12:14])
 		texto = self.conexao.recv(tam).decode("ascii")
@@ -321,14 +345,14 @@ class Recebedor():
 		# gera um KeyFlood para alagamento
 		cliente = Cliente(seq, iporigem, portaorigem, texto)
 		msg, msgtexto = mensagens.gerarKeyFlood(cliente, ttl - 1)
-		Remetente.alagar(seq, msg, msgtexto)
+		Remetente.alagar(msg, msgtexto)
 		log("Pedido de alagamento para consulta com a chave '{0}' com num seq {1}.".format(texto, seq))
 	
 	def processarTopoFlood(self):
 		dados = self.conexao.recv(14)
 		ttl = Dados.paraShort(dados[:2])
 		seq = Dados.paraInt(ados[2:6])
-		iporigem = Dados.paraInt(dados[6:10])
+		iporigem = Dados.paraIp(dados[6:10])
 		portaorigem = Dados.paraShort(dados[10:12])
 		tam = Dados.paraShort(dados[12:14])
 		texto = self.conexao.recv(tam).decode("ascii")
@@ -348,7 +372,7 @@ class Recebedor():
 		# gera um TopoFlood para alagamento
 		cliente = Cliente(seq, iporigem, portaorigem, resposta)
 		msg, msgtexto = mensagens.gerarTopoFlood(cliente, ttl - 1)
-		Remetente.alagar(seq, msg, msgtexto)
+		Remetente.alagar(msg, msgtexto)
 		log("Pedido de alagamento para topoologia com num seq {0}.".format(seq))
 	
 	def processarResp(self, conexao, endereco):
@@ -358,7 +382,7 @@ class Recebedor():
 		tam = Dados.paraShort(dados[4:6])
 		texto = self.conexao.recv(tam).decode("ascii")
 		resposta = Resposta(seq, texto, self.endereco[0], self.endereco[1])
-		log("{0} {1}:{2}".format(texto, endereco[0], endereco[1]))
+		log("Resposta inesperada {0} {1}:{2}".format(texto, endereco[0], endereco[1]))
 
 	def processarNada(self, conexao, endereco):
 		log("Ops!")
@@ -476,6 +500,7 @@ if len(sys.argv) > 2:
 	historico = set()
 	# inicia o gerenciador de msgs no modo servente
 	mensagens = Mensagens(True)
+	clientes = Clientes()
 	serventes = Serventes()
 	soquetes = Soquetes()
 	if len(parametros['servidores']) > 0:

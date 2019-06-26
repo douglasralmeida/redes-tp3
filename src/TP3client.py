@@ -190,7 +190,7 @@ class Rede():
     def conectar(self):
         dest = (parametros['ip'], parametros["porta"])
         self.soqueteEnvia.connect(dest)
-        log("Cliente {0} na porta {1}.".format(dest[0], dest[1]))
+        log("Cliente {0} na ativo porta {1}.".format(dest[0], dest[1]))
         dados, texto = mensagens.gerarId()
         self.enviar(dados, texto)
 
@@ -205,6 +205,7 @@ class Rede():
         self.soqueteRecebe.bind(local)
         self.soqueteRecebe.listen()
         self.soqueteRecebe.settimeout(parametros['timeout'])
+        log("Ouvindo na porta {0}.".format(parametros["portaescuta"]))
         while True:
             try:
                 con, endereco = self.soqueteRecebe.accept()
