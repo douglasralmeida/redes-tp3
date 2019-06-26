@@ -4,6 +4,9 @@
 # TP3 de Redes - Nó da Rede
 # Douglas R. Almeida
 
+## TODO: Criar um dict para armazenar os clientes conectados e suas portas de escuta
+## TODO: Implementar try..except no sendall para clientes
+
 from collections import namedtuple
 import queue
 import select
@@ -125,7 +128,7 @@ class Mensagens():
 			log("Enviando pedido de conexão.")
 			dados.apensarZero(2)
 		else:
-			dados.apensarShort(parametros['porta'])
+			dados.apensarShort(parametros['portaescuta'])
 
 		return dados.obter()
 
@@ -249,6 +252,7 @@ class Recebedor():
 		porta = Dados.paraShort(dadoporta)
 		if porta > 0:
 			log("Pedido de conexão de um cliente {0} na porta {1}.".format(self.endereco[0], porta))
+			self.clientes[ip] = porta
 		else:
 			log("Pedido de conexão de um servente {0} na porta {1}.".format(self.endereco[0], self.endereco[1]))
 			serventes.adicionar(self.conexao)
