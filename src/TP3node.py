@@ -4,6 +4,7 @@
 # TP3 de Redes - Nó da Rede
 # Douglas R. Almeida
 
+from collections import namedtuple
 import queue
 import select
 import socket
@@ -22,13 +23,38 @@ EXIBIR_LOG          = True
 
 # VARIÁVEIS DO PROGRAMA
 # =====================
-parametros = {'ip': '', 'porta': 0, 'timeout': 6, 'servidores': {}, 'bd': ''}
-bd = {}
+bd = None
+Cliente = namedtuple("Cliente", ["numseq", "ip", "porta", "texto"])
+historico = None
 mensagens = None
+parametros = {'ip': '', 'porta': 0, 'timeout': 6, 'servidores': {}, 'bd': ''}
+remetentes = None
 soquetes = None
 
 # CLASSES DO PROGRAMA
 # ===================
+# Banco de Dados do servente
+class BancoDados():
+	def __init__(self):
+		self.dados = {}
+		linhas = self.carregar()
+		for l in linhas:
+			i = l.find(' ')
+			chave = l[0:i]
+			self.dados[chave] = l[i:].lstrip().strip('\n')
+
+	def carregar(self):
+		nomearquivo = parametros['bd']
+		for linha in open(nomearquivo, 'rt'):
+			if not linha.startswith('#'):
+				yield linha
+
+	def contem(self, chave):
+		return (chave in self.dados)
+
+	def pesquisar(self, chave):
+		return self.dados[chave]
+
 # Dados no formato de transmissão
 class Dados():
 	def __init__(self):
@@ -86,7 +112,6 @@ class Mensagens():
 	def __init__(self, modoservent):
 		self.numseq = 0
 		self.modoservent = modoservent
-		self.ttlpadrao = 3
 
 	def gerar(self, id):
 		dados = Dados()
@@ -123,10 +148,10 @@ class Mensagens():
 
 		return dados.obter()
 
-	def gerarKeyFlood(self, cliente):
+	def gerarKeyFlood(self, cliente, ttl = 3):
 		dados = self.gerar(MSG_KEYFLOOD)
 		# ttl
-		dados.apensarShort(self.ttlpadrao)
+		dados.apensarShort(ttl)
 		# sequencial
 		dados.apensarInt(cliente.numseq)
 		# ip e porta
@@ -138,10 +163,10 @@ class Mensagens():
 
 		return dados.obter()
 
-	def gerarTopoFlood(self, cliente):
+	def gerarTopoFlood(self, cliente, ttl = 3):
 		dados = self.gerar(MSG_TOPOFLOOD)
 		# ttl
-		dados.apensarShort(self.ttlpadrao)
+		dados.apensarShort(ttl)
 		# sequencial
 		dados.apensarInt(cliente.numseq)
 		# ip e porta
@@ -164,31 +189,204 @@ class Mensagens():
 
 		return dados.obter()
 
+# Manipula o envio de mensagens
+class Remetente():
+	def __init__(self, conexao):
+		self.conexao = conexao
+
+	@staticmethod
+	def alagar(dados, texto):
+		for soq in serventes:
+			soq.sendall(dados)
+			soq.sendall(texto)
+
+	def processar(self, dados, texto):
+		endereco = self.conexao.getpeername()
+		self.conexao.sendall(dados)
+		if len(texto) > 0:
+			self.conexao.sendall(texto)
+		log("Dados para {0}.".format(endereco))
+
+	@staticmethod
+	def enviarAoCliente(endereco, dados, texto):
+		despachante = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+		setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+		#self.servidor.bind(endereco)
+		despachante.connect(endereco)
+		despachante.sendall(dados)
+		despachante.sendall(texto)
+		despachante.close()
+		log("Dados para {0}.".format(endereco))
+
+# Manipula o recebimento de respostas
+class Recebedor():
+	def  __init__(self, conexao):
+		self.conexao = conexao
+		self.endereco = conexao.getpeername()
+		self.processarComo = [
+  			self.processarNada,
+			self.processarNada,
+			self.processarNada,
+			self.processarNada,
+			self.processarId,
+			self.processarKeyReq,
+			self.processarTopoReq,
+			self.processarKeyFlood,
+			self.processarTopoFlood,
+			self.processarResp
+		]
+
+	def processar(self):
+		dadotipo = self.conexao.recv(2)
+		if not dadotipo:
+			return False
+		tipo = Dados.paraShort(dadotipo)
+		log("Dados de {0}.".format(self.endereco))
+		self.processarComo[tipo]()
+
+	def processarId(self):
+		dadoporta = self.conexao.recv(2)
+		porta = Dados.paraShort(dadoporta)
+		if porta > 0:
+			log("Pedido de conexão de um cliente {0} na porta {1}.".format(self.endereco[0], porta))
+		else:
+			log("Pedido de conexão de um servente {0} na porta {1}.".format(self.endereco[0], self.endereco[1]))
+			serventes.adicionar(self.conexao)
+
+			# -- TESTE -- #
+			#if EXIBIR_LOG:
+			#	dados, texto = mensagens.gerarResp(0, "qualquer resposta")
+			#	self.enviarDados(conexao, dados, texto)	
+
+	def processarKeyReq(self):
+		dados = self.conexao.recv(6)
+		seq = Dados.paraInt(dados[:4])
+		tam = Dados.paraShort(dados[4:6])
+		texto = self.conexao.recv(tam).decode("ascii")
+		ip = self.endereco[0]
+		porta = self.endereco[1]
+		historico.add((ip, porta, seq))
+		log("Pedido de consulta com a chave '{0}' e num seq {1}.".format(texto, seq))
+		# consulta dicionário e responde
+		if bd.contem(texto):
+			resposta = bd.pesquisar(texto) 
+			msg, msgtexto = mensagens.gerarResp(seq, resposta)
+			Remetente.enviarAoCliente((ip, porta), msg, msgtexto)
+		# gera um KeyFlood para alagamento
+		cliente = Cliente(seq, ip, porta, texto)
+		msg, msgtexto = mensagens.gerarKeyFlood(cliente)
+		Remetente.alagar(seq, msg, msgtexto)
+
+	def processarTopoReq(self):
+		dados = self.conexao.recv(4)
+		seq = Dados.paraInt(dados)
+		ip = self.endereco[0]
+		porta = self.endereco[1]
+		historico.add((ip, porta, seq))
+		log("Pedido de topologia com num seq {0}.".format(seq))
+		# responde ao cliente
+		resposta = "{0}:{1}".format(parametros["ip"], parametros["porta"])
+		msg, msgtexto = mensagens.gerarResp(seq, resposta)
+		Remetente.enviarAoCliente((ip, porta), msg, msgtexto)
+		# gera um TopoFlood para alagamento
+		cliente = Cliente(seq, ip, porta, resposta)
+		msg, msgtexto = mensagens.gerarTopoFlood(cliente)
+		Remetente.alagar(seq, msg, msgtexto)
+	
+	def processarKeyFlood(self):
+		dados = self.conexao.recv(14)
+		ttl = Dados.paraShort(dados[:2])
+		seq = Dados.paraInt(dados[2:6])
+		iporigem = Dados.paraInt(dados[6:10])
+		portaorigem = Dados.paraShort(dados[10:12])
+		tam = Dados.paraShort(dados[12:14])
+		texto = self.conexao.recv(tam).decode("ascii")
+		# Implementa alagamento confiavel
+		# descartando msgs já vistas anteriormente
+		if (iporigem, portaorigem, seq) in historico:
+			return
+		historico.add((iporigem, portaorigem, seq))
+		# consulta dicionário e responde
+		if bd.contem(texto):
+			resposta = bd.pesquisar(texto) 
+			msg, msgtexto = mensagens.gerarResp(seq, resposta)
+			Remetente.enviarAoCliente((iporigem, portaorigem), msg, msgtexto)
+		# mata a msg se ttl for igual a zero
+		if ttl == 0:
+			return
+		# gera um KeyFlood para alagamento
+		cliente = Cliente(seq, iporigem, portaorigem, texto)
+		msg, msgtexto = mensagens.gerarKeyFlood(cliente, ttl - 1)
+		Remetente.alagar(seq, msg, msgtexto)
+		log("Pedido de alagamento para consulta com a chave '{0}' com num seq {1}.".format(texto, seq))
+	
+	def processarTopoFlood(self):
+		dados = self.conexao.recv(14)
+		ttl = Dados.paraShort(dados[:2])
+		seq = Dados.paraInt(ados[2:6])
+		iporigem = Dados.paraInt(dados[6:10])
+		portaorigem = Dados.paraShort(dados[10:12])
+		tam = Dados.paraShort(dados[12:14])
+		texto = self.conexao.recv(tam).decode("ascii")
+		# Implementa alagamento confiavel
+		# descartando msgs já vistas anteriormente
+		if (iporigem, portaorigem, seq) in historico:
+			return
+		historico.add((iporigem, portaorigem, seq))
+		log("Pedido de topologia com num seq {0}.".format(seq))
+		# responde ao cliente
+		resposta = texto + ' ' + "{0}:{1}".format(parametros["ip"], parametros["porta"])
+		msg, msgtexto = mensagens.gerarResp(seq, resposta)
+		Remetente.enviarAoCliente((iporigem, portaorigem), msg, msgtexto)
+		# mata a msg se ttl for igual a zero
+		if ttl == 0:
+			return
+		# gera um TopoFlood para alagamento
+		cliente = Cliente(seq, iporigem, portaorigem, resposta)
+		msg, msgtexto = mensagens.gerarTopoFlood(cliente, ttl - 1)
+		Remetente.alagar(seq, msg, msgtexto)
+		log("Pedido de alagamento para topoologia com num seq {0}.".format(seq))
+	
+	def processarResp(self, conexao, endereco):
+		Resposta = namedtuple("Resposta", ["numseq", "texto", "ip", "porta"])
+		dados = self.conexao.recv(6)
+		seq = Dados.paraInt(dados[:4])
+		tam = Dados.paraShort(dados[4:6])
+		texto = self.conexao.recv(tam).decode("ascii")
+		resposta = Resposta(seq, texto, self.endereco[0], self.endereco[1])
+		log("{0} {1}:{2}".format(texto, endereco[0], endereco[1]))
+
+	def processarNada(self, conexao, endereco):
+		log("Ops!")
+
 # Gerencia a lista de serventes
 class Serventes():
 	def __init__(self):
-		self.lista = {}
+		self.index = 0
+		self.lista = []
 
-	def adicionar(self, ip, porta):
-		self.lista[ip] = porta
+	# Interador sobre a lista de serventes
+	def __iter__(self):
+		return self
+
+	def __len__(self):
+		return len(self.lista)
+
+	def __next__(self):
+		if self.index >= len(self.lista):
+			raise StopIteration
+		self.index = self.index + 1
+    
+		return self.lista[self.index - 1]
+
+	def adicionar(self, soquete):
+		self.lista.append(soquete)
 
 # Gerencia vários soquetes
 class Soquetes():
-	def __init__(self):
+	def __init__(self):		
 		endereco = (parametros['ip'], parametros['porta'])
-		self.filas_mensagens = {}
-		self.receberDadosComo = [
-  			self.receberNada,
-			self.receberNada,
-			self.receberNada,
-			self.receberNada,
-			self.receberId,
-			self.receberKeyReq,
-			self.receberTopoReq,
-			self.receberKeyFlood,
-			self.receberTopoFlood,
-			self.receberResp
-		]
+		self.conexaoativa = None
 		self.servidor = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
 		self.servidor.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
 		self.servidor.setblocking(0)
@@ -200,7 +398,6 @@ class Soquetes():
 	def adicionarCliente(self, conexao):
 		conexao.setblocking(0)
 		self.entradas.append(conexao)
-		self.filas_mensagens[conexao] = queue.Queue()
 
 	def conectarAtivamente(self, servidores):
 		for (ip, porta) in servidores.items():
@@ -209,101 +406,20 @@ class Soquetes():
 			con.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
 			con.connect(dest)
 			self.adicionarCliente(con)
-			serventes.adicionar(ip, porta)
+			serventes.adicionar(con)
 			# Envia msg de ID
 			dados, texto = mensagens.gerarId()
-			self.enviarDados(con, dados, texto)
-
-	def enviarDados(self, conexao, dados, texto):
-		endereco = conexao.getpeername()
-		conexao.sendall(dados)
-		if len(texto) > 0:
-			conexao.sendall(texto)
-		log("Dados para {0}.".format(endereco))
-
-	def receberDados(self, conexao):
-		dadotipo = conexao.recv(2)
-		endereco = conexao.getpeername()
-		if not dadotipo:
-			return False
-		tipo = Dados.paraShort(dadotipo)
-		log("Dados de {0}.".format(endereco))
-		self.receberDadosComo[tipo](conexao, endereco)
-
-		return True
-
-	def receberId(self, conexao, endereco):
-		dadoporta = conexao.recv(2)
-		porta = Dados.paraShort(dadoporta)
-		if porta > 0:
-			log("Pedido de conexão de um cliente {0} na porta {1}.".format(endereco[0], porta))
-		else:
-			log("Pedido de conexão de um servente {0} na porta {1}.".format(endereco[0], endereco[1]))
-			serventes.adicionar(endereco[0], endereco[1])
-
-			# -- TESTE -- #
-			if EXIBIR_LOG:
-				dados, texto = mensagens.gerarResp(0, "qualquer resposta")
-				self.enviarDados(conexao, dados, texto)
-			
-
-	def receberKeyReq(self, conexao, endereco):
-		dados = conexao.recv(6)
-		seq = Dados.paraInt(dados[:4])
-		tam = Dados.paraShort(dados[4:6])
-		texto = conexao.recv(tam)
-		# falta decodificar
-		log("Pedido de consulta com a chave X e num seq {0}.".format(seq))
-
-	def receberTopoReq(self, conexao, endereco):
-		dados = conexao.recv(4)
-		seq = Dados.paraInt(dados)
-		log("Pedido de topologia com num seq {0}.".format(seq))
-	
-	def receberKeyFlood(self, conexao, endereco):
-		dados = conexao.recv(14)
-		ttl = Dados.paraShort(dados[:2])
-		seq = Dados.paraInt(dados[2:6])
-		iporigem = Dados.paraInt(dados[6:10])
-		portaorigem = Dados.paraShort(dados[10:12])
-		tam = Dados.paraShort(dados[12:14])
-		texto = conexao.recv(tam)
-		# falta decodificar
-		log("Pedido de alagamento para consulta com a chave X com num seq {0}.".format(seq))
-	
-	def receberTopoFlood(self, conexao, endereco):
-		dados = conexao.recv(14)
-		ttl = Dados.paraShort(dados[:2])
-		seq = Dados.paraInt(ados[2:6])
-		iporigem = Dados.paraInt(dados[6:10])
-		portaorigem = Dados.paraShort(dados[10:12])
-		tam = Dados.paraShort(dados[12:14])
-		texto = conexao.recv(tam)
-		# falta decodificar
-		log("Pedido de alagamento para topoologia com num seq {0}.".format(seq))
-	
-	def receberResp(self, conexao, endereco):
-		dados = conexao.recv(6)
-		seq = Dados.paraInt(dados[:4])
-		tam = Dados.paraShort(dados[4:6])
-		texto = conexao.recv(tam)
-		# falta decodificar
-		log("Resposta '{0}' com num seq {1}.".format(texto.decode("ascii"), seq))
-
-	def receberNada(self, conexao, endereco):
-		log("Ops!")
+			remetente = Remetente(con)
+			remetente.processar(dados, texto)
 
 	def removerCliente(self, conexao):
 		self.entradas.remove(conexao)
 		conexao.close()
-		del self.filas_mensagens[conexao]
 
 	def manipular(self):
 		while (self.entradas):
 			# Aguarda por soquetes que estão prontos para processamento
 			l, e, x = select.select(self.entradas, [], self.entradas)
-
-			# Fazer coisas aqui
 
 			if not (l or x):
 				continue
@@ -316,8 +432,8 @@ class Soquetes():
 					self.adicionarCliente(con)
 				else:
 					# soquete que aguarda por dados de entrada
-					if not self.receberDados(s):
-						self.removerCliente(s)
+					recebedor = Recebedor(s)
+					recebedor.processar()
 
 			# Soquetes com erros
 			for s in x:
@@ -348,24 +464,12 @@ def args_processar():
             parametros['servidores'][temp[0]] = int(temp[1])
             j = j + 1
 
-def bd_carregar():
-	nomearquivo = parametros['bd']
-	for linha in open(nomearquivo, 'rt'):
-		if not linha.startswith('#'):
-			yield linha
-
-def bd_processar():
-	linhas = bd_carregar()
-	for l in linhas:
-		i = l.find(' ')
-		chave = l[0:i]
-		bd[chave] = l[i:].lstrip().strip('\n')
-
 # CORPO DO PROGRAMA
 # =================
 if len(sys.argv) > 2:
 	args_processar()
-	bd_processar()
+	bd = BancoDados()
+	historico = set()
 	# inicia o gerenciador de msgs no modo servente
 	mensagens = Mensagens(True)
 	serventes = Serventes()
