@@ -17,7 +17,7 @@ MSG_KEYFLOOD		= 7
 MSG_TOPOFLOOD		= 8
 MSG_RESP			= 9
 EXIBIR_LOG          = False
-PROMPT             = "$ "
+PROMPT             = ""
 ARGS_INSUFICIENTES = "Erro com o comando {0}: Argumentos insuficientes."
 CMD_NAOENCONTRADO  = "Comando desconhecido"
 MSG_INESPERADA     = "Mensagem incorreta recebida de {0}:{1}"
@@ -278,7 +278,7 @@ class Resposta():
         print("{0} {1}:{2}".format(texto, self.ip, self.porta))
 
     def processarNada(self, conexao, endereco):
-        log("Ops!")
+        print(MSG_INESPERADA.format(self.ip, self.porta))
 
 # FUNCOES DO PROGRAMA
 # ===================
