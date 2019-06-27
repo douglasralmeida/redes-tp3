@@ -4,7 +4,6 @@
 # TP3 de Redes - Nó da Rede
 # Douglas R. Almeida
 
-## TODO: Criar um dict para armazenar os clientes conectados e suas portas de escuta
 ## TODO: Implementar try..except no sendall para clientes
 
 from collections import namedtuple
@@ -22,7 +21,7 @@ MSG_TOPOREQ			= 6
 MSG_KEYFLOOD		= 7
 MSG_TOPOFLOOD		= 8
 MSG_RESP			= 9
-EXIBIR_LOG          = True
+EXIBIR_LOG          = False
 
 # VARIÁVEIS DO PROGRAMA
 # =====================
@@ -136,7 +135,7 @@ class Dados():
 		self.texto = novotexto
 
 	def obter(self):
-		return self.valor, self.texto
+		return self.valor + self.texto
 
 # Gerador de mensagens
 class Mensagens():
@@ -226,27 +225,26 @@ class Remetente():
 		self.conexao = conexao
 
 	@staticmethod
-	def alagar(dados, texto):
+	def alagar(dados):
+		log("Processando alagamento ({0} soquetes)...".format(len(serventes)))
 		for soq in serventes:
 			soq.sendall(dados)
-			soq.sendall(texto)
+		log("Processado.")
 
-	def processar(self, dados, texto):
+	def processar(self, dados):
 		endereco = self.conexao.getpeername()
 		self.conexao.sendall(dados)
-		if len(texto) > 0:
-			self.conexao.sendall(texto)
-		log("Dados para {0}.".format(endereco))
+		log("Dados para servente {0}.".format(endereco))
 
 	@staticmethod
-	def enviarAoCliente(endereco, dados, texto):
+	def enviarAoCliente(endereco, dados):
 		despachante = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
 		despachante.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
 		despachante.connect(endereco)
 		despachante.sendall(dados)
-		despachante.sendall(texto)
 		despachante.close()
-		log("Dados para {0}.".format(endereco))
+
+		log("Dados para cliente {0}.".format(endereco))
 
 # Manipula o recebimento de respostas
 class Recebedor():
@@ -254,7 +252,7 @@ class Recebedor():
 		self.conexao = conexao
 		self.endereco = conexao.getpeername()
 		self.processarComo = [
-  			self.processarNada,
+  		self.processarNada,
 			self.processarNada,
 			self.processarNada,
 			self.processarNada,
@@ -269,7 +267,7 @@ class Recebedor():
 	def processar(self):
 		dadotipo = self.conexao.recv(2)
 		if not dadotipo:
-			return False
+			app_sair()
 		tipo = Dados.paraShort(dadotipo)
 		log("Dados de {0}.".format(self.endereco))
 		self.processarComo[tipo]()
@@ -278,7 +276,7 @@ class Recebedor():
 		dadoporta = self.conexao.recv(2)
 		porta = Dados.paraShort(dadoporta)
 		if porta > 0:
-			log("Pedido de conexão de um cliente {0} na porta {1}.".format(self.endereco[0], porta))
+			log("Pedido de conexão de um cliente {0} que houve na porta {1}.".format(self.endereco[0], porta))
 			clientes.adicionar(self.endereco[0], porta)
 		else:
 			log("Pedido de conexão de um servente {0} na porta {1}.".format(self.endereco[0], self.endereco[1]))
@@ -291,37 +289,67 @@ class Recebedor():
 		texto = self.conexao.recv(tam).decode("ascii")
 		ip = self.endereco[0]
 		porta = self.endereco[1]
-		historico.add((ip, porta, seq))
 		portaescuta = clientes.obterPorta(ip)
+		tupla = (ip, portaescuta, seq)
+		historico.add(tupla)
 		log("Pedido de consulta com a chave '{0}' e num seq {1}.".format(texto, seq))
 		# consulta dicionário e responde
 		if bd.contem(texto):
 			resposta = bd.pesquisar(texto) 
-			msg, msgtexto = mensagens.gerarResp(seq, resposta)
-			Remetente.enviarAoCliente((ip, portaescuta), msg, msgtexto)
+			msg = mensagens.gerarResp(seq, resposta)
+			Remetente.enviarAoCliente((ip, portaescuta), msg)
 		# gera um KeyFlood para alagamento
 		cliente = Cliente(seq, ip, portaescuta, texto)
-		msg, msgtexto = mensagens.gerarKeyFlood(cliente)
-		Remetente.alagar(msg, msgtexto)
+		msg = mensagens.gerarKeyFlood(cliente)
+		Remetente.alagar(msg)
 
 	def processarTopoReq(self):
 		dados = self.conexao.recv(4)
 		seq = Dados.paraInt(dados)
 		ip = self.endereco[0]
 		porta = self.endereco[1]
-		historico.add((ip, porta, seq))
+		portaescuta = clientes.obterPorta(ip)
+		tupla = (ip, portaescuta, seq)
+		historico.add(tupla)
 		log("Pedido de topologia com num seq {0}.".format(seq))
 		# responde ao cliente
-		portaescuta = clientes.obterPorta(ip)
 		resposta = "{0}:{1}".format(parametros["ip"], parametros["porta"])
-		msg, msgtexto = mensagens.gerarResp(seq, resposta)
-		Remetente.enviarAoCliente((ip, portaescuta), msg, msgtexto)
+		msg = mensagens.gerarResp(seq, resposta)
+		Remetente.enviarAoCliente((ip, portaescuta), msg)
 		# gera um TopoFlood para alagamento
 		cliente = Cliente(seq, ip, portaescuta, resposta)
-		msg, msgtexto = mensagens.gerarTopoFlood(cliente)
-		Remetente.alagar(msg, msgtexto)
+		msg = mensagens.gerarTopoFlood(cliente)
+		Remetente.alagar(msg)
 	
 	def processarKeyFlood(self):
+		dados = self.conexao.recv(14)
+		ttl = Dados.paraShort(dados[:2])
+		seq = Dados.paraInt(dados[2:6])
+		iporigem = Dados.paraIp(dados[6:10])
+		portaorigem = Dados.paraShort(dados[10:12])
+		tam = Dados.paraShort(dados[12:14])
+		texto = self.conexao.recv(tam).decode("ascii")
+		# Implementa alagamento confiavel
+		# descartando msgs já vistas anteriormente
+		tupla = (iporigem, portaorigem, seq)
+		if tupla in historico:
+			return
+		historico.add(tupla)
+		# consulta dicionário e responde
+		if bd.contem(texto):
+			resposta = bd.pesquisar(texto) 
+			msg = mensagens.gerarResp(seq, resposta)
+			Remetente.enviarAoCliente((iporigem, portaorigem), msg)
+		# mata a msg se ttl for igual a zero
+		if ttl == 0:
+			return
+		# gera um KeyFlood para alagamento
+		cliente = Cliente(seq, iporigem, portaorigem, texto)
+		msg = mensagens.gerarKeyFlood(cliente, ttl - 1)
+		Remetente.alagar(msg)
+		log("Pedido de alagamento para consulta com a chave '{0}' com num seq {1}.".format(texto, seq))
+	
+	def processarTopoFlood(self):
 		dados = self.conexao.recv(14)
 		ttl = Dados.paraShort(dados[:2])
 		seq = Dados.paraInt(dados[2:6])
@@ -334,48 +362,21 @@ class Recebedor():
 		if (iporigem, portaorigem, seq) in historico:
 			return
 		historico.add((iporigem, portaorigem, seq))
-		# consulta dicionário e responde
-		if bd.contem(texto):
-			resposta = bd.pesquisar(texto) 
-			msg, msgtexto = mensagens.gerarResp(seq, resposta)
-			Remetente.enviarAoCliente((iporigem, portaorigem), msg, msgtexto)
-		# mata a msg se ttl for igual a zero
-		if ttl == 0:
-			return
-		# gera um KeyFlood para alagamento
-		cliente = Cliente(seq, iporigem, portaorigem, texto)
-		msg, msgtexto = mensagens.gerarKeyFlood(cliente, ttl - 1)
-		Remetente.alagar(msg, msgtexto)
-		log("Pedido de alagamento para consulta com a chave '{0}' com num seq {1}.".format(texto, seq))
-	
-	def processarTopoFlood(self):
-		dados = self.conexao.recv(14)
-		ttl = Dados.paraShort(dados[:2])
-		seq = Dados.paraInt(ados[2:6])
-		iporigem = Dados.paraIp(dados[6:10])
-		portaorigem = Dados.paraShort(dados[10:12])
-		tam = Dados.paraShort(dados[12:14])
-		texto = self.conexao.recv(tam).decode("ascii")
-		# Implementa alagamento confiavel
-		# descartando msgs já vistas anteriormente
-		if (iporigem, portaorigem, seq) in historico:
-			return
-		historico.add((iporigem, portaorigem, seq))
 		log("Pedido de topologia com num seq {0}.".format(seq))
 		# responde ao cliente
 		resposta = texto + ' ' + "{0}:{1}".format(parametros["ip"], parametros["porta"])
-		msg, msgtexto = mensagens.gerarResp(seq, resposta)
-		Remetente.enviarAoCliente((iporigem, portaorigem), msg, msgtexto)
+		msg = mensagens.gerarResp(seq, resposta)
+		Remetente.enviarAoCliente((iporigem, portaorigem), msg)
 		# mata a msg se ttl for igual a zero
 		if ttl == 0:
 			return
 		# gera um TopoFlood para alagamento
 		cliente = Cliente(seq, iporigem, portaorigem, resposta)
-		msg, msgtexto = mensagens.gerarTopoFlood(cliente, ttl - 1)
-		Remetente.alagar(msg, msgtexto)
+		msg = mensagens.gerarTopoFlood(cliente, ttl - 1)
+		Remetente.alagar(msg)
 		log("Pedido de alagamento para topoologia com num seq {0}.".format(seq))
 	
-	def processarResp(self, conexao, endereco):
+	def processarResp(self):
 		Resposta = namedtuple("Resposta", ["numseq", "texto", "ip", "porta"])
 		dados = self.conexao.recv(6)
 		seq = Dados.paraInt(dados[:4])
@@ -395,6 +396,7 @@ class Serventes():
 
 	# Interador sobre a lista de serventes
 	def __iter__(self):
+		self.index = 0
 		return self
 
 	def __len__(self):
@@ -409,6 +411,10 @@ class Serventes():
 
 	def adicionar(self, soquete):
 		self.lista.append(soquete)
+
+	def remover(self, soquete):
+		if soquete in self.lista:
+			del self.lista[soquete]
 
 # Gerencia vários soquetes
 class Soquetes():
@@ -436,9 +442,9 @@ class Soquetes():
 			self.adicionarCliente(con)
 			serventes.adicionar(con)
 			# Envia msg de ID
-			dados, texto = mensagens.gerarId()
+			dados = mensagens.gerarId()
 			remetente = Remetente(con)
-			remetente.processar(dados, texto)
+			remetente.processar(dados)
 
 	def removerCliente(self, conexao):
 		self.entradas.remove(conexao)
@@ -465,32 +471,40 @@ class Soquetes():
 
 			# Soquetes com erros
 			for s in x:
+				log("Erro encontrado.")
+				soquete.remover(s)
 				self.removerCliente(s)
+				app_sair()
 
 # FUNCOES DO PROGRAMA
 # ===================
 def log(*args, **kwargs):
     if EXIBIR_LOG:
-        print(*args, file=sys.stderr, **kwargs)
+        print("{0}".format(parametros["porta"]), *args, file=sys.stderr, **kwargs)
 
 # -----------------------------------------
 # Lê os argumentos do programa
-# arg1 = ip:porta
-# arg2 = arquivo com banco de dados
-# arg3 = opcional, servidores (até 10) para conectar
+# arg1 = porta
+# arg3 = arquivo com banco de dados
+# arg4 = opcional, servidores (até 10) para conectar
 #   parametros = dicionario onde serão gravados os argumentos
 def args_processar():
-    temp = sys.argv[1].split(':')
-    parametros['ip'] = temp[0]
-    parametros['porta'] = int(temp[1])
+    parametros['ip'] = "127.0.0.1"
+    parametros['porta'] = int(sys.argv[1])
     parametros['bd'] = sys.argv[2]
-    i = len(sys.argv) 
+    i = len(sys.argv)
     if i > 3:
         j = 3
         while (j < i):
             temp = sys.argv[j].split(':')
             parametros['servidores'][temp[0]] = int(temp[1])
             j = j + 1
+
+def app_sair():
+	log("Desligando...")
+	#for s in soquetes:
+	#	s.close()
+	sys.exit()
 
 # CORPO DO PROGRAMA
 # =================

@@ -16,7 +16,7 @@ MSG_TOPOREQ			= 6
 MSG_KEYFLOOD		= 7
 MSG_TOPOFLOOD		= 8
 MSG_RESP			= 9
-EXIBIR_LOG          = True
+EXIBIR_LOG          = False
 PROMPT             = "$ "
 ARGS_INSUFICIENTES = "Erro com o comando {0}: Argumentos insuficientes."
 CMD_NAOENCONTRADO  = "Comando desconhecido"
@@ -37,16 +37,16 @@ def cmd_teste(args):
 def cmd_pergunta(args):
     if len(args) > 1:
         chave = args[1]
-        dados, texto = mensagens.gerarKeyReq(chave)
-        rede.enviar(dados, texto)
+        dados = mensagens.gerarKeyReq(chave)
+        rede.enviar(dados)
         if not rede.escutar():
             print(MSG_NENHUMA)
     else:
         print(ARGS_INSUFICIENTES.format(args[0]))
 
 def cmd_topologia(args):
-    dados, texto = mensagens.gerarTopoReq()
-    rede.enviar(dados, texto)
+    dados = mensagens.gerarTopoReq()
+    rede.enviar(dados)
     if not rede.escutar():
         print(MSG_NENHUMA)
 
@@ -129,13 +129,13 @@ class Dados():
     @staticmethod
     def paraShort(bytesarray):
         return unpack('!H', bytesarray)[0]
-        
+
     def definir(self, novovalor, novotexto):
         self.valor = novovalor
         self.texto = novotexto
 
     def obter(self):
-        return self.valor, self.texto
+        return self.valor + self.texto
 
 # Gerador de mensagens
 class Mensagens():
@@ -184,32 +184,29 @@ class Rede():
         self.soqueteEnvia = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self.soqueteEnvia.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
 
-        self.soqueteRecebe = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        self.soqueteRecebe.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-
     def conectar(self):
         dest = (parametros['ip'], parametros["porta"])
         self.soqueteEnvia.connect(dest)
-        log("Cliente {0} na ativo porta {1}.".format(dest[0], dest[1]))
-        dados, texto = mensagens.gerarId()
-        self.enviar(dados, texto)
+        log("Cliente {0} na porta {1}.".format(dest[0], dest[1]))
+        dados = mensagens.gerarId()
+        self.enviar(dados)
 
-    def enviar(self, dados, texto):
+    def enviar(self, dados):
         self.soqueteEnvia.sendall(dados)
-        if len(texto) > 0:
-            self.soqueteEnvia.sendall(texto)
 
     def escutar(self):
         recebeuMsg = False
         local = ("127.0.0.1", parametros["portaescuta"])
-        self.soqueteRecebe.bind(local)
-        self.soqueteRecebe.listen()
-        self.soqueteRecebe.settimeout(parametros['timeout'])
+        soqueteRecebe = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        soqueteRecebe.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        soqueteRecebe.bind(local)
+        soqueteRecebe.listen()
+        soqueteRecebe.settimeout(parametros['timeout'])
         log("Ouvindo na porta {0}.".format(parametros["portaescuta"]))
         while True:
             try:
-                con, endereco = self.soqueteRecebe.accept()
-                dados = self.soqueteRecebe.recv(2)
+                con, endereco = soqueteRecebe.accept()
+                dados = con.recv(2)
                 if not dados:
                     break
                 tipo = Dados.paraShort(dados)
@@ -219,9 +216,6 @@ class Rede():
                 recebeuMsg = True
             except socket.timeout:
                 return recebeuMsg
-            except:
-                break
-        
         return recebeuMsg
 
     def encerrar(self):
@@ -232,8 +226,8 @@ class Resposta():
         endereco = soquete.getpeername()
         self.ip = endereco[0]
         self.porta = endereco[1]
-        self.soquete = soquete
-        self.processar = {
+        self.conexao = soquete
+        self.processar = [
             self.processarNada,
 			self.processarNada,
 			self.processarNada,
@@ -244,7 +238,7 @@ class Resposta():
 			self.processarKeyFlood,
 			self.processarTopoFlood,
 			self.processarResp
-        }
+        ]
         self.seqAguardado = mensagens.ultimoSeqGerado()
 
     def processarId(self):
@@ -273,7 +267,7 @@ class Resposta():
         texto = self.conexao.recv(tam)
         print(MSG_INESPERADA.format(self.ip, self.porta))
 
-    def processarResp(self, conexao, endereco):
+    def processarResp(self):
         dados = self.conexao.recv(6)
         seq = Dados.paraInt(dados[:4])
         tam = Dados.paraShort(dados[4:6])

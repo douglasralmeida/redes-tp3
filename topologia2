@@ -1,0 +1,6 @@
+python3.6 src/TP3node.py 8080 data/arquivo1.bd &
+(sleep 1 && python3.6 src/TP3node.py 8081 data/arquivo2.bd 127.0.0.1:8080) &
+(sleep 2 && python3.6 src/TP3node.py 8082 data/arquivo3.bd 127.0.0.1:8081) &
+(sleep 3 && python3.6 src/TP3node.py 8083 data/arquivo4.bd 127.0.0.1:8082) &
+(sleep 4 && python3.6 src/TP3node.py 8084 data/arquivo5.bd 127.0.0.1:8083) &
+(sleep 5 && python3.6 src/TP3node.py 8085 data/arquivo5.bd 127.0.0.1:8084)
