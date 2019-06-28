@@ -240,9 +240,12 @@ class Remetente():
 	def enviarAoCliente(endereco, dados):
 		despachante = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
 		despachante.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-		despachante.connect(endereco)
-		despachante.sendall(dados)
-		despachante.close()
+		try:
+			despachante.connect(endereco)
+			despachante.sendall(dados)
+			despachante.close()
+		except:
+			pass
 
 		log("Dados para cliente {0}.".format(endereco))
 
